@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: mst-scanner-postgres
+    restart: unless-stopped
+    ports:
+      - ${POSTGRES_PORT}:5432
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ${POSTGRES_DATA_VOLUME}:/var/lib/postgresql/data
+  mst-scanner:
+    image: mst-scanner-${APP_ENV}
+    build:
+      context: .
+      target: mst-scanner
+      args:
+        - PORT:${PORT}
+    container_name: mst-scanner-${APP_ENV}
+    restart: unless-stopped
+    ports:
+      - ${PORT}:${PORT}
+    # Uncomment this to disable run application on standalone mode
+    # depends_on:
+    #   - postgres
+    #   - redis
+    volumes:
+      - .env:/mst-scanner/.env:ro
+      - ${LOG_VOLUME}:/mst-scanner/${LOG_DIR}
+networks:
+  default:
+    name: mst-scanner

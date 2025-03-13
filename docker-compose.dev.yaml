@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: mst-scanner-postgres
+    restart: unless-stopped
+    ports:
+      - ${POSTGRES_PORT}:5432
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: mst-scanner-pgadmin
+    restart: unless-stopped
+    ports:
+      - ${PGADMIN_PORT}:80
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    volumes:
+      - pgadmin:/var/lib/pgadmin
+  mst-scanner:
+    image: mst-scanner-dev
+    build:
+      context: .
+      target: mst-scanner-dev
+      args:
+        - PORT:${PORT}
+    container_name: mst-scanner-dev
+    restart: unless-stopped
+    ports:
+      - ${PORT}:${PORT}
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/mst-scanner/
+volumes:
+  postgres:
+    name: mst-scanner-postgres
+  pgadmin:
+    name: mst-scanner-pgadmin
+networks:
+  default:
+    name: mst-scanner

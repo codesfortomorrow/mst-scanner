@@ -1,0 +1,61 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum TokenType {
+  ERC20
+  ERC721
+  ERC1155
+
+  @@map("token_type")
+}
+
+model Token {
+  address         String    @unique
+  type            TokenType
+  name            String
+  symbol          String
+  totalSupply     Decimal   @default(0) @map("total_supply") @db.Decimal()
+  totalHolders    BigInt    @default(0) @map("total_holders")
+  syncedTillBlock BigInt    @default(0) @map("synced_till_block")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("token")
+}
+
+model TokenTransfer {
+  blockNumber  BigInt   @map("block_number")
+  txHash       String   @map("tx_hash")
+  logIndex     Int      @map("log_index")
+  fromAddress  String   @map("from_address")
+  toAddress    String   @map("to_address")
+  amount       Decimal? @db.Decimal()
+  tokenId      Decimal? @map("token_id") @db.Decimal()
+  tokenAddress String   @map("token_address")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([txHash, logIndex])
+  @@map("token_transfer")
+}
+
+model TokenBalance {
+  id              BigInt   @id @default(autoincrement())
+  account         String
+  tokenAddress    String   @map("token_address")
+  tokenId         Decimal? @map("token_id") @db.Decimal()
+  amount          Decimal? @db.Decimal()
+  lastUpdateBlock BigInt   @map("last_update_block")
+
+  @@unique([account, tokenAddress, tokenId])
+  @@map("token_balance")
+}

@@ -1,0 +1,14 @@
+{
+  "singleQuote": true,
+  "trailingComma": "all",
+  "endOfLine": "lf",
+  "plugins": [],
+  "overrides": [
+    {
+      "files": "*.json",
+      "options": {
+        "trailingComma": "none"
+      }
+    }
+  ]
+}
