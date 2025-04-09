@@ -8,4 +8,12 @@ export const tokens: Prisma.TokenCreateInput[] = [
     type: 'ERC721',
     syncedTillBlock: 0,
   },
+  {
+    address: '0xBBFf82a5a609967E10A786c8351bD9d23811C9f6'.toLowerCase(),
+    name: 'Traveltor Token',
+    symbol: 'TVTOR',
+    totalSupply: '50000000000000000000000000000',
+    type: 'ERC20',
+    syncedTillBlock: 0,
+  },
 ];
