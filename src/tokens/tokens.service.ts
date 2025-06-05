@@ -26,7 +26,8 @@ export class TokensService
 
   onApplicationBootstrap() {
     // This will do periodic sync from blockchain to local database
-    this.initSync();
+    // this.initSync();
+    // this.initReindex();
   }
 
   private async initSync(): Promise<void> {
@@ -48,25 +49,66 @@ export class TokensService
     setTimeout(() => this.initSync(), 5000);
   }
 
-  // Method to sync ERC20 token data into the scanner
-  private async syncErc20ToScanner(): Promise<void> {
+  private async initReindex(): Promise<void> {
+    const tokens = [
+      {
+        address: '0x4698122027ffc448c0e68da022e0ec0bf2b44ae8',
+        type: 'ERC721',
+      },
+    ];
+
+    await Promise.allSettled(
+      tokens.map(async (token) => {
+        if (token.type === 'ERC721') {
+          return await this.syncErc721ToScanner(token.address);
+        } else if (token.type === 'ERC20') {
+          return await this.syncErc20ToScanner(token.address);
+        }
+      }),
+    );
+  }
+
+  // Method to reindex ERC20 token data into the scanner
+  private async syncErc20ToScanner(tokenAddress: string): Promise<void> {
     const client = new Client(process.env.SCANNER_DATABASE_URL);
     try {
       await client.connect();
 
-      const transfers = await this.prisma.tokenTransfer.findMany({
-        orderBy: [{ blockNumber: 'asc' }, { logIndex: 'asc' }],
-        skip: 0, // Update skip if you want to resume (crash due to error) from the last sync position
-      });
+      const transfers = (
+        await client.query<{
+          fromAddress: string;
+          toAddress: string;
+          tokenAddress: string;
+          txHash: string;
+          blockNumber: number;
+          amount: string;
+        }>(`
+          SELECT
+          '0x' || ENCODE(from_address_hash, 'hex') as "fromAddress",
+          '0x' || ENCODE(to_address_hash, 'hex') as "toAddress",
+          '0x' || ENCODE(token_contract_address_hash, 'hex') as "tokenAddress",
+          '0x' || ENCODE(transaction_hash, 'hex') as "txHash",
+          amount,
+          block_number as "blockNumber"
+          FROM token_transfers WHERE
+          ENCODE(token_contract_address_hash, 'hex') ILIKE '${tokenAddress.slice(2)}'
+          ORDER BY block_number ASC, log_index ASC
+          OFFSET 0
+        `)
+      ).rows;
 
       console.log(
         'Sync started till',
         transfers[transfers.length - 1].blockNumber,
+        'Logs',
+        transfers.length,
       );
 
       let count = 0;
       for (const transfer of transfers) {
         const time = Date.now();
+
+        await client.query('BEGIN');
 
         // If from is not zero address
         if (transfer.fromAddress !== ethers.ZeroAddress) {
@@ -84,14 +126,32 @@ export class TokensService
             lastLog = lastLogQueryResponse.rows[0];
           }
 
-          await client.query(`
-            INSERT INTO address_token_balances (
-              address_hash, block_number, token_contract_address_hash, value, value_fetched_at, inserted_at, updated_at, token_id, token_type
-            )
-            VALUES (
-              DECODE('${transfer.fromAddress.slice(2)}', 'hex'), ${transfer.blockNumber}, DECODE('${transfer.tokenAddress.slice(2)}', 'hex'), ${Prisma.Decimal(lastLog?.value || 0).sub(transfer.amount || 0)}, NOW(), NOW(), NOW(), NULL, 'ERC-20'
-            )
+          const currentLogQueryResponse = await client.query<Log>(`
+            SELECT id, block_number, value FROM address_token_balances WHERE
+            block_number = ${transfer.blockNumber}
+            AND ENCODE(address_hash, 'hex') ILIKE '${transfer.fromAddress.slice(2)}'
+            AND ENCODE(token_contract_address_hash, 'hex') ILIKE '${transfer.tokenAddress.slice(2)}'
           `);
+
+          let currentLog: Log | null = null;
+          if (currentLogQueryResponse.rows.length > 0) {
+            currentLog = currentLogQueryResponse.rows[0];
+          }
+
+          if (!currentLog) {
+            await client.query(`
+              INSERT INTO address_token_balances (
+                address_hash, block_number, token_contract_address_hash, value, value_fetched_at, inserted_at, updated_at, token_id, token_type
+              )
+              VALUES (
+                DECODE('${transfer.fromAddress.slice(2)}', 'hex'), ${transfer.blockNumber}, DECODE('${transfer.tokenAddress.slice(2)}', 'hex'), ${Prisma.Decimal(lastLog?.value || 0).sub(transfer.amount || 0)}, NOW(), NOW(), NOW(), NULL, 'ERC-20'
+              )
+            `);
+          } else {
+            await client.query(`
+              UPDATE address_token_balances SET value = ${Prisma.Decimal(currentLog.value).sub(transfer.amount || 0)} WHERE id = ${currentLog.id};
+            `);
+          }
         }
 
         const lastLogQueryResponse = await client.query<Log>(`
@@ -108,14 +168,33 @@ export class TokensService
           lastLog = lastLogQueryResponse.rows[0];
         }
 
-        await client.query(`
-          INSERT INTO address_token_balances (
-            address_hash, block_number, token_contract_address_hash, value, value_fetched_at, inserted_at, updated_at, token_id, token_type
-          )
-          VALUES (
-            DECODE('${transfer.toAddress.slice(2)}', 'hex'), ${transfer.blockNumber}, DECODE('${transfer.tokenAddress.slice(2)}', 'hex'), ${Prisma.Decimal(lastLog?.value || 0).add(transfer.amount || 0)}, NOW(), NOW(), NOW(), NULL, 'ERC-20'
-          )
+        const currentLogQueryResponse = await client.query<Log>(`
+          SELECT id, block_number, value FROM address_token_balances WHERE
+          block_number = ${transfer.blockNumber}
+          AND ENCODE(address_hash, 'hex') ILIKE '${transfer.toAddress.slice(2)}'
+          AND ENCODE(token_contract_address_hash, 'hex') ILIKE '${transfer.tokenAddress.slice(2)}'
         `);
+
+        let currentLog: Log | null = null;
+        if (currentLogQueryResponse.rows.length > 0) {
+          currentLog = currentLogQueryResponse.rows[0];
+        }
+
+        if (!currentLog) {
+          await client.query(`
+            INSERT INTO address_token_balances (
+              address_hash, block_number, token_contract_address_hash, value, value_fetched_at, inserted_at, updated_at, token_id, token_type
+            )
+            VALUES (
+              DECODE('${transfer.toAddress.slice(2)}', 'hex'), ${transfer.blockNumber}, DECODE('${transfer.tokenAddress.slice(2)}', 'hex'), ${Prisma.Decimal(lastLog?.value || 0).add(transfer.amount || 0)}, NOW(), NOW(), NOW(), NULL, 'ERC-20'
+            )
+          `);
+        } else {
+          console.log(currentLog);
+          await client.query(`
+            UPDATE address_token_balances SET value = ${Prisma.Decimal(currentLog.value).add(transfer.amount || 0)} WHERE id = ${currentLog.id};
+          `);
+        }
 
         // Update token current balance
         if (transfer.fromAddress !== ethers.ZeroAddress) {
@@ -135,9 +214,18 @@ export class TokensService
               `Current balance log not found for ${transfer.fromAddress}`,
             );
           } else {
-            await client.query(`
-              UPDATE address_current_token_balances SET block_number = ${transfer.blockNumber}, value = ${Prisma.Decimal(currentBalLog.value).sub(transfer.amount || 0)}, old_value = ${currentBalLog.value} WHERE id = ${currentBalLog.id};
-            `);
+            if (
+              Number(currentBalLog.block_number) ===
+              Number(transfer.blockNumber)
+            ) {
+              await client.query(`
+                UPDATE address_current_token_balances SET value = ${Prisma.Decimal(currentBalLog.value).sub(transfer.amount || 0)} WHERE id = ${currentBalLog.id};
+              `);
+            } else {
+              await client.query(`
+                UPDATE address_current_token_balances SET block_number = ${transfer.blockNumber}, value = ${Prisma.Decimal(currentBalLog.value).sub(transfer.amount || 0)}, old_value = ${currentBalLog.value} WHERE id = ${currentBalLog.id};
+              `);
+            }
           }
         }
 
@@ -162,10 +250,20 @@ export class TokensService
             )
           `);
         } else {
-          await client.query(`
-            UPDATE address_current_token_balances SET block_number = ${transfer.blockNumber}, value = ${Prisma.Decimal(currentBalLog.value).add(transfer.amount || 0)}, old_value = ${currentBalLog.value} WHERE id = ${currentBalLog.id};
-          `);
+          if (
+            Number(currentBalLog.block_number) === Number(transfer.blockNumber)
+          ) {
+            await client.query(`
+              UPDATE address_current_token_balances SET value = ${Prisma.Decimal(currentBalLog.value).add(transfer.amount || 0)} WHERE id = ${currentBalLog.id};
+            `);
+          } else {
+            await client.query(`
+              UPDATE address_current_token_balances SET block_number = ${transfer.blockNumber}, value = ${Prisma.Decimal(currentBalLog.value).add(transfer.amount || 0)}, old_value = ${currentBalLog.value} WHERE id = ${currentBalLog.id};
+            `);
+          }
         }
+
+        await client.query('COMMIT');
 
         count++;
         console.log(
@@ -176,31 +274,52 @@ export class TokensService
         );
       }
     } catch (err) {
+      await client.query('ROLLBACK');
       console.error('Error occurred on scanner sync', err);
     } finally {
       await client.end();
     }
   }
 
-  // Method to sync ERC721 token data into the scanner
-  private async syncErc721ToScanner(): Promise<void> {
+  // Method to reindex ERC721 token data into the scanner
+  private async syncErc721ToScanner(tokenAddress: string): Promise<void> {
     const client = new Client(process.env.SCANNER_DATABASE_URL);
     try {
       await client.connect();
 
-      const transfers = await this.prisma.tokenTransfer.findMany({
-        orderBy: [{ blockNumber: 'asc' }, { logIndex: 'asc' }],
-        skip: 0, // Update skip if you want to resume (crash due to error) from the last sync position
-      });
+      const transfers = (
+        await client.query<{
+          fromAddress: string;
+          toAddress: string;
+          tokenAddress: string;
+          txHash: string;
+          blockNumber: number;
+        }>(`
+          SELECT 
+          '0x' || ENCODE(from_address_hash, 'hex') as "fromAddress",
+          '0x' || ENCODE(to_address_hash, 'hex') as "toAddress",
+          '0x' || ENCODE(token_contract_address_hash, 'hex') as "tokenAddress",
+          '0x' || ENCODE(transaction_hash, 'hex') as "txHash",
+          block_number as "blockNumber"
+          FROM token_transfers WHERE
+          ENCODE(token_contract_address_hash, 'hex') ILIKE '${tokenAddress.slice(2)}'
+          ORDER BY block_number ASC, log_index ASC
+          OFFSET 0
+        `)
+      ).rows;
 
       console.log(
         'Sync started till',
         transfers[transfers.length - 1].blockNumber,
+        'Logs',
+        transfers.length,
       );
 
       let count = 0;
       for (const transfer of transfers) {
         const time = Date.now();
+
+        await client.query('BEGIN');
 
         // If from is not zero address
         if (transfer.fromAddress !== ethers.ZeroAddress) {
@@ -354,6 +473,8 @@ export class TokensService
           }
         }
 
+        await client.query('COMMIT');
+
         count++;
         console.log(
           'Processed transfer log',
@@ -363,6 +484,7 @@ export class TokensService
         );
       }
     } catch (err) {
+      await client.query('ROLLBACK');
       console.error('Error occurred on scanner sync', err);
     } finally {
       await client.end();
